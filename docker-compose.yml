@@ -1,0 +1,27 @@
+# IceFlow — Postgres for remote / always-on access
+# Local SQLite stays default. Switch when you need phone/laptop access away from PC.
+#
+#   docker compose up -d
+#   Then follow docs/deployment/remote-database.md
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: iceflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: iceflow
+      POSTGRES_PASSWORD: iceflow_change_me
+      POSTGRES_DB: iceflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - iceflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iceflow -d iceflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  iceflow_pgdata:

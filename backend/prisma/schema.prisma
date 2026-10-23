@@ -1,0 +1,640 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Auth & Users ───────────────────────────────────────────
+
+model User {
+  id                 String    @id @default(uuid())
+  username           String    @unique
+  email              String?   @unique // login with email from anywhere (Supabase-hosted)
+  passwordHash       String
+  role               String // MAIN_ADMIN | SUB_ADMIN
+  branchId           String?
+  branch             Branch?   @relation(fields: [branchId], references: [id])
+  displayName        String
+  language           String    @default("en")
+  isActive           Boolean   @default(true)
+  isLocked           Boolean   @default(false)
+  mustChangePassword Boolean   @default(false)
+  twoFactorEnabled   Boolean   @default(false)
+  twoFactorSecret    String?
+  pinHash            String? // for sensitive confirmations
+  voiceEnrollment    String? // JSON voice enrollment data
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  refreshTokens   RefreshToken[]
+  auditLogs       AuditLog[]        @relation("AuditActor")
+  notifications   Notification[]
+  stockMovements  StockMovement[]
+  sessionsCreated EmployeeSession[] @relation("SessionCreator")
+  expenses        Expense[]
+  syncEvents      SyncEvent[]
+
+  @@index([role])
+  @@index([branchId])
+  @@index([email])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  deviceInfo String?
+  ipAddress String?
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─── Branches ───────────────────────────────────────────────
+
+model Branch {
+  id              String   @id @default(uuid())
+  code            String   @unique // e.g. BR001, ending digit used for employee IDs
+  name            String
+  address         String?
+  phone           String?
+  city            String?
+  state           String?
+  language        String   @default("en")
+  isMain          Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  isLocked        Boolean  @default(false)
+  canEditRates    Boolean  @default(false)
+  canWriteOff     Boolean  @default(false)
+  canAdjustStock  Boolean  @default(false)
+  holidayRegion   String?
+  weatherCity     String?
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  users           User[]
+  employees       Employee[]
+  stockBalances   StockBalance[]
+  stockMovements  StockMovement[]
+  dispatchesFrom  StockDispatch[] @relation("DispatchFrom")
+  dispatchesTo    StockDispatch[] @relation("DispatchTo")
+  stockRequests   StockRequest[]
+  expenses        Expense[]
+  events          EventOrder[]
+  sessions        EmployeeSession[]
+  holidays        Holiday[]
+  notifications   Notification[]
+  fraudAlerts     FraudAlert[]
+  permissions     BranchPermission[]
+
+  @@index([isMain])
+  @@index([isActive])
+}
+
+model BranchPermission {
+  id        String   @id @default(uuid())
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id])
+  key       String
+  allowed   Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@unique([branchId, key])
+}
+
+// ─── Items & Rates ──────────────────────────────────────────
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  items     Item[]
+  createdAt DateTime @default(now())
+}
+
+model Item {
+  id                   String   @id @default(uuid())
+  code                 String   @unique
+  name                 String
+  categoryId           String?
+  category             Category? @relation(fields: [categoryId], references: [id])
+  unit                 String   @default("pieces")
+  packSize             Int      @default(1) // pieces per box/packet for easy ordering
+  packLabel            String   @default("box") // box | packet | crate
+  imageUrl             String?
+  isActive             Boolean  @default(true)
+  minStockThreshold    Int      @default(10)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  deletedAt            DateTime?
+
+  rates                RateHistory[]
+  stockBalances        StockBalance[]
+  stockMovements       StockMovement[]
+  sessionLines         SessionLine[]
+  dispatchLines        DispatchLine[]
+  requestLines         StockRequestLine[]
+  damageRequests       DamageRequest[]
+  eventLines           EventOrderLine[]
+  itemRequests         ItemRequest[]
+
+  @@index([isActive])
+  @@index([code])
+}
+
+model RateHistory {
+  id            String    @id @default(uuid())
+  itemId        String
+  item          Item      @relation(fields: [itemId], references: [id])
+  rateType      String // MAIN_TO_SUB | SUB_TO_EMPLOYEE
+  amount        Float
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  changedBy     String
+  reason        String
+  branchId      String? // null = global; set for branch-specific override
+  createdAt     DateTime  @default(now())
+
+  @@index([itemId, rateType, effectiveFrom])
+  @@index([branchId])
+}
+
+model StockBalance {
+  id        String   @id @default(uuid())
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id])
+  itemId    String
+  item      Item     @relation(fields: [itemId], references: [id])
+  quantity  Float    @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, itemId])
+}
+
+model StockMovement {
+  id              String   @id @default(uuid())
+  branchId        String
+  branch          Branch   @relation(fields: [branchId], references: [id])
+  itemId          String
+  item            Item     @relation(fields: [itemId], references: [id])
+  quantity        Float
+  movementType    String
+  direction       String // in | out
+  referenceType   String? // dispatch, session, damage, adjustment, event
+  referenceId     String?
+  employeeId      String?
+  employee        Employee? @relation(fields: [employeeId], references: [id])
+  sessionId       String?
+  session         EmployeeSession? @relation(fields: [sessionId], references: [id])
+  costRate        Float?
+  employeeRate    Float?
+  createdById     String
+  createdBy       User     @relation(fields: [createdById], references: [id])
+  notes           String?
+  approvalStatus  String   @default("approved") // pending | approved | rejected
+  approvedById    String?
+  entrySource     String   @default("manual")
+  createdAt       DateTime @default(now())
+  deletedAt       DateTime?
+  voidReason      String?
+
+  @@index([branchId, itemId])
+  @@index([movementType])
+  @@index([sessionId])
+  @@index([createdAt])
+  @@index([referenceId])
+}
+
+// ─── Stock Dispatch & Requests ──────────────────────────────
+
+model StockDispatch {
+  id            String   @id @default(uuid())
+  dispatchNo    String   @unique
+  fromBranchId  String
+  fromBranch    Branch   @relation("DispatchFrom", fields: [fromBranchId], references: [id])
+  toBranchId    String
+  toBranch      Branch   @relation("DispatchTo", fields: [toBranchId], references: [id])
+  status        String   @default("pending")
+  requestId     String?
+  notes         String?
+  packedAt      DateTime?
+  sentAt        DateTime?
+  receivedAt    DateTime?
+  createdById   String
+  receivedById  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  lines         DispatchLine[]
+
+  @@index([toBranchId])
+  @@index([status])
+}
+
+model DispatchLine {
+  id          String        @id @default(uuid())
+  dispatchId  String
+  dispatch    StockDispatch @relation(fields: [dispatchId], references: [id])
+  itemId      String
+  item        Item          @relation(fields: [itemId], references: [id])
+  quantity    Float
+  costRate    Float
+  notes       String?
+}
+
+model StockRequest {
+  id          String   @id @default(uuid())
+  requestNo   String   @unique
+  branchId    String
+  branch      Branch   @relation(fields: [branchId], references: [id])
+  status      String   @default("pending") // pending | approved | partial | rejected | fulfilled
+  notes       String?
+  reviewNotes String?
+  reviewedById String?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  lines       StockRequestLine[]
+
+  @@index([branchId])
+  @@index([status])
+}
+
+model StockRequestLine {
+  id            String       @id @default(uuid())
+  requestId     String
+  request       StockRequest @relation(fields: [requestId], references: [id])
+  itemId        String
+  item          Item         @relation(fields: [itemId], references: [id])
+  quantityAsked Float
+  quantityApproved Float?
+  notes         String?
+}
+
+model ItemRequest {
+  id          String   @id @default(uuid())
+  branchId    String
+  proposedName String
+  proposedCode String?
+  category    String?
+  unit        String?
+  notes       String?
+  status      String   @default("pending")
+  itemId      String?
+  item        Item?    @relation(fields: [itemId], references: [id])
+  createdById String
+  reviewedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DamageRequest {
+  id          String   @id @default(uuid())
+  branchId    String
+  itemId      String
+  item        Item     @relation(fields: [itemId], references: [id])
+  quantity    Float
+  reason      String
+  status      String   @default("pending")
+  photoUrl    String?
+  createdById String
+  reviewedById String?
+  reviewNotes String?
+  sessionId   String?
+  employeeId  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  @@index([branchId])
+  @@index([status])
+}
+
+// ─── Employees ──────────────────────────────────────────────
+
+model Employee {
+  id              String   @id @default(uuid())
+  employeeCode    String   @unique // e.g. 701
+  fullName        String
+  mobile          String
+  address         String?
+  photoUrl        String?
+  aadhaarEnc      String? // encrypted
+  joiningDate     DateTime @default(now())
+  status          String   @default("active") // active | inactive
+  notes           String?
+  branchId        String
+  branch          Branch   @relation(fields: [branchId], references: [id])
+  outstanding     Float    @default(0)
+  creditBalance   Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  sessions        EmployeeSession[]
+  payments        Payment[]
+  stockMovements  StockMovement[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([fullName])
+}
+
+model EmployeeSession {
+  id                String   @id @default(uuid())
+  sessionNo         String   @unique
+  employeeId        String
+  employee          Employee @relation(fields: [employeeId], references: [id])
+  branchId          String
+  branch            Branch   @relation(fields: [branchId], references: [id])
+  sessionDate       DateTime
+  status            String   @default("draft")
+  previousOutstanding Float  @default(0)
+  totalBill         Float    @default(0)
+  cashPaid          Float    @default(0)
+  phonePePaid       Float    @default(0)
+  otherPaid         Float    @default(0)
+  phonePeRef        String?
+  otherPaymentNote  String?
+  newOutstanding    Float    @default(0)
+  excessAmount      Float    @default(0)
+  isCleared         Boolean  @default(false)
+  finalizedAt       DateTime?
+  voidedAt          DateTime?
+  voidReason        String?
+  createdById       String
+  createdBy         User     @relation("SessionCreator", fields: [createdById], references: [id])
+  notes             String?
+  billPdfPath       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  lines             SessionLine[]
+  payments          Payment[]
+  stockMovements    StockMovement[]
+  voiceEntries      VoiceEntry[]
+
+  @@unique([employeeId, sessionDate])
+  @@index([branchId, sessionDate])
+  @@index([status])
+}
+
+model SessionLine {
+  id              String          @id @default(uuid())
+  sessionId       String
+  session         EmployeeSession @relation(fields: [sessionId], references: [id])
+  itemId          String
+  item            Item            @relation(fields: [itemId], references: [id])
+  stockOutQty     Float           @default(0)
+  stockInQty      Float           @default(0)
+  damagedQty      Float           @default(0)
+  damagedReason   String?
+  soldQty         Float           @default(0)
+  employeeRate    Float           @default(0) // frozen at stock-out
+  costRate        Float           @default(0)
+  amount          Float           @default(0)
+  entrySource     String          @default("manual")
+  isDraft         Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@unique([sessionId, itemId])
+}
+
+model Payment {
+  id          String   @id @default(uuid())
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  sessionId   String?
+  session     EmployeeSession? @relation(fields: [sessionId], references: [id])
+  cashAmount  Float    @default(0)
+  phonePeAmount Float  @default(0)
+  otherAmount Float    @default(0)
+  phonePeRef  String?
+  totalAmount Float
+  paymentDate DateTime @default(now())
+  notes       String?
+  createdById String
+  isReversed  Boolean  @default(false)
+  reverseReason String?
+  createdAt   DateTime @default(now())
+  deletedAt   DateTime?
+
+  @@index([employeeId])
+  @@index([paymentDate])
+}
+
+// ─── Expenses, Events, Holidays ─────────────────────────────
+
+model Expense {
+  id           String    @id @default(uuid())
+  branchId     String
+  branch       Branch    @relation(fields: [branchId], references: [id])
+  category     String
+  amount       Float
+  description  String
+  expenseDate  DateTime
+  receiptUrl   String? // relative path under /uploads
+  receiptName  String?
+  status       String    @default("pending") // pending | approved | rejected
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  createdById  String
+  createdBy    User      @relation(fields: [createdById], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  @@index([branchId, expenseDate])
+  @@index([status])
+}
+
+model EventOrder {
+  id             String   @id @default(uuid())
+  branchId       String
+  branch         Branch   @relation(fields: [branchId], references: [id])
+  eventName      String
+  customerName   String?
+  customerPhone  String? // mobile 1 — required in UI
+  customerPhone2 String? // mobile 2 — optional
+  eventDate      DateTime
+  deliveryDate   DateTime?
+  status         String   @default("upcoming") // upcoming | reserved | delivered | cancelled
+  totalAmount    Float    @default(0)
+  advancePaid    Float    @default(0) // cash paid advance
+  cashFixed      Float    @default(0) // agreed/fixed cash amount
+  notes          String?
+  createdById    String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+
+  lines          EventOrderLine[]
+
+  @@index([branchId, eventDate])
+}
+
+model EventOrderLine {
+  id       String     @id @default(uuid())
+  eventId  String
+  event    EventOrder @relation(fields: [eventId], references: [id])
+  itemId   String
+  item     Item       @relation(fields: [itemId], references: [id])
+  quantity Float
+  rate     Float
+  amount   Float
+}
+
+model Holiday {
+  id          String   @id @default(uuid())
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id])
+  name        String
+  date        DateTime
+  isNational  Boolean  @default(false)
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+}
+
+// ─── Notifications, Audit, Fraud ────────────────────────────
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id])
+  targetRole  String? // MAIN_ADMIN | SUB_ADMIN | ALL
+  title       String
+  body        String
+  type        String // stock_request | damage | fraud | payment | system | audit
+  severity    String   @default("info") // info | warning | critical
+  isRead      Boolean  @default(false)
+  linkUrl     String?
+  metaJson    String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@index([branchId])
+  @@index([targetRole])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorId     String?
+  actor       User?    @relation("AuditActor", fields: [actorId], references: [id])
+  branchId    String?
+  action      String
+  entityType  String
+  entityId    String?
+  beforeJson  String?
+  afterJson   String?
+  reason      String?
+  ipAddress   String?
+  deviceInfo  String?
+  severity    String   @default("info")
+  createdAt   DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([branchId])
+}
+
+model FraudAlert {
+  id          String   @id @default(uuid())
+  branchId    String?
+  branch      Branch?  @relation(fields: [branchId], references: [id])
+  alertType   String
+  title       String
+  description String
+  severity    String   @default("medium") // low | medium | high | critical
+  status      String   @default("open") // open | investigating | resolved | dismissed
+  entityType  String?
+  entityId    String?
+  metaJson    String?
+  resolvedById String?
+  resolvedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([status])
+  @@index([branchId])
+}
+
+// ─── Sync, Backup, Settings, Voice ──────────────────────────
+
+model SyncEvent {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  branchId    String?
+  clientId    String
+  entityType  String
+  entityId    String
+  operation   String // create | update | delete
+  payloadJson String
+  status      String   @default("pending") // pending | synced | conflict | failed
+  conflictJson String?
+  syncedAt    DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([status])
+  @@index([branchId])
+  @@index([clientId])
+}
+
+model BackupRecord {
+  id          String   @id @default(uuid())
+  filename    String
+  filepath    String
+  sizeBytes   Int
+  type        String   @default("manual") // manual | scheduled | pre_restore
+  createdById String?
+  notes       String?
+  createdAt   DateTime @default(now())
+}
+
+model AppSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model VoiceEntry {
+  id          String   @id @default(uuid())
+  sessionId   String?
+  session     EmployeeSession? @relation(fields: [sessionId], references: [id])
+  userId      String
+  branchId    String?
+  transcript  String
+  parsedJson  String?
+  language    String   @default("en")
+  status      String   @default("draft") // draft | confirmed | saved | cancelled
+  actionType  String?
+  createdAt   DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([userId])
+}

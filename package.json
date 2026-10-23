@@ -1,0 +1,30 @@
+{
+  "name": "iceflow-branch-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "IceFlow Branch Manager — multi-branch ice-cream distribution & employee collection system with Ashok AI",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "dev:backend": "npm run dev -w backend",
+    "dev:frontend": "npm run dev -w frontend",
+    "build": "npm run build -w shared && npm run build -w backend && npm run build -w frontend",
+    "db:generate": "npm run db:generate -w backend",
+    "db:migrate": "npm run db:migrate -w backend",
+    "db:seed": "npm run db:seed -w backend",
+    "db:reset": "npm run db:reset -w backend",
+    "backup": "npm run backup -w backend",
+    "lint": "npm run lint -w backend && npm run lint -w frontend",
+    "setup": "npm install && npm run db:generate && npm run db:migrate && npm run db:seed"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
